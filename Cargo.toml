@@ -1,0 +1,30 @@
+[package]
+name = "svgc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Convert SVG to PNG, ICO, or ICNS"
+repository = "https://github.com/emako/svgc"
+readme = "README.md"
+build = "build.rs"
+
+[[bin]]
+name = "svgc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ico = "0.6"
+icns = "0.5"
+resvg = "0.45"
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

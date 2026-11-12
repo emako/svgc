@@ -1,0 +1,73 @@
+name: Build svgc.exe
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: svgc-${{ github.ref_type == 'tag' && format('tag-{0}', github.ref_name) || 'latest' }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Publish svgc.exe
+    if: ${{ !(github.ref_type == 'tag' && github.ref_name == 'latest' && github.actor == 'github-actions[bot]') }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./build.ps1 -Target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $root = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $env:GITHUB_WORKSPACE "target" }
+          $candidates = @(
+            (Join-Path $root "release/svgc.exe"),
+            (Join-Path $root "x86_64-pc-windows-msvc/release/svgc.exe")
+          )
+          $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $exe) { throw "svgc.exe was not produced." }
+          $isTag = "${{ github.ref_type }}" -eq "tag"
+          if ($isTag) {
+            $version = "${{ github.ref_name }}"
+            $lines = @(
+              "Official Rust build ($version).",
+              "",
+              "Source commit: ${{ github.sha }}"
+            )
+          } else {
+            $version = "latest"
+            $lines = @(
+              "Preview Rust build.",
+              "",
+              "Source commit: ${{ github.sha }}"
+            )
+          }
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.txt"
+          Set-Content -LiteralPath $notesFile -Value $lines -Encoding utf8NoBOM
+          if ($isTag) {
+            gh release delete "$version" --yes 2>$null
+            gh release create "$version" "$exe" --title "$version" --target "${{ github.sha }}" --notes-file "$notesFile"
+          } else {
+            gh release delete "latest" --yes --cleanup-tag 2>$null
+            gh release create "latest" "$exe" --prerelease --target "${{ github.sha }}" --title "latest" --notes-file "$notesFile"
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
