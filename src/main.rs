@@ -1,4 +1,4 @@
-//! svgc — convert SVG to PNG, ICO, or ICNS.
+//! svgc — convert SVG to PNG, ICO, ICNS, or icon fonts (TTF/WOFF/WOFF2).
 
 use std::fs;
 use std::io::BufWriter;
@@ -11,21 +11,22 @@ use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
 use icns::{IconFamily, Image as IcnsImage, PixelFormat};
 use resvg::tiny_skia::{IntSize, Pixmap, Transform};
 use resvg::usvg::{self, Tree};
+use webfont_generator::{FontType, GenerateWebfontsOptions};
 
-/// Convert SVG to PNG, ICO, or ICNS.
+/// Convert SVG to PNG, ICO, ICNS, or icon fonts (TTF/WOFF/WOFF2).
 #[derive(Debug, Parser)]
 #[command(
     name = "svgc",
     version,
-    about = "Convert SVG to PNG, ICO, or ICNS",
+    about = "Convert SVG to PNG, ICO, ICNS, or icon fonts (TTF/WOFF/WOFF2)",
     arg_required_else_help = true,
-    after_help = "Examples:\n  svgc icon.svg\n  svgc icon.svg icon.ico\n  svgc icon.svg -o out.icns --size 512"
+    after_help = "Examples:\n  svgc icon.svg\n  svgc icon.svg icon.ico\n  svgc icon.svg -o out.icns --size 512\n  svgc icons/\n  svgc icons/ -o dist/ --name myicons\n  svgc icons/ -f woff2"
 )]
 struct Cli {
-    /// Input SVG file
+    /// Input SVG file, or a directory of SVG icons for font output
     input: PathBuf,
 
-    /// Output path (optional; defaults to <input>.png)
+    /// Output path (file for images; directory for fonts)
     #[arg(value_name = "OUTPUT")]
     output_pos: Option<PathBuf>,
 
@@ -33,9 +34,13 @@ struct Cli {
     #[arg(short, long, value_name = "PATH")]
     output: Option<PathBuf>,
 
-    /// Output format when the path has no usable extension
+    /// Output format: png|ico|icns (file) or ttf|woff|woff2 (directory; default all three)
     #[arg(short, long, value_name = "FMT")]
     format: Option<Format>,
+
+    /// Font family / base file name (font mode only; default: directory name)
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
 
     /// Pixel size (PNG width/height; single size for ICO/ICNS)
     #[arg(short, long, value_name = "PX")]
@@ -47,6 +52,9 @@ enum Format {
     Png,
     Ico,
     Icns,
+    Ttf,
+    Woff,
+    Woff2,
 }
 
 impl Format {
@@ -55,11 +63,31 @@ impl Format {
             Format::Png => "png",
             Format::Ico => "ico",
             Format::Icns => "icns",
+            Format::Ttf => "ttf",
+            Format::Woff => "woff",
+            Format::Woff2 => "woff2",
         }
     }
 
     fn extension(self) -> &'static str {
         self.as_str()
+    }
+
+    fn is_font(self) -> bool {
+        matches!(self, Format::Ttf | Format::Woff | Format::Woff2)
+    }
+
+    fn is_image(self) -> bool {
+        matches!(self, Format::Png | Format::Ico | Format::Icns)
+    }
+
+    fn to_font_type(self) -> Option<FontType> {
+        match self {
+            Format::Ttf => Some(FontType::Ttf),
+            Format::Woff => Some(FontType::Woff),
+            Format::Woff2 => Some(FontType::Woff2),
+            _ => None,
+        }
     }
 }
 
@@ -71,7 +99,10 @@ impl FromStr for Format {
             "png" => Ok(Format::Png),
             "ico" => Ok(Format::Ico),
             "icns" => Ok(Format::Icns),
-            other => bail!("unknown format '{other}' (use png, ico, or icns)"),
+            "ttf" => Ok(Format::Ttf),
+            "woff" => Ok(Format::Woff),
+            "woff2" => Ok(Format::Woff2),
+            other => bail!("unknown format '{other}' (use png, ico, icns, ttf, woff, or woff2)"),
         }
     }
 }
@@ -86,18 +117,24 @@ fn default_output(input: &Path, format: Format) -> PathBuf {
     input.with_extension(format.extension())
 }
 
-fn resolve_output_and_format(cli: &Cli) -> Result<(PathBuf, Format)> {
-    let out = cli
-        .output
-        .clone()
-        .or_else(|| cli.output_pos.clone())
-        .unwrap_or_else(|| default_output(&cli.input, Format::Png));
+fn output_arg(cli: &Cli) -> Option<PathBuf> {
+    cli.output.clone().or_else(|| cli.output_pos.clone())
+}
+
+fn resolve_image_output_and_format(cli: &Cli) -> Result<(PathBuf, Format)> {
+    let out = output_arg(cli).unwrap_or_else(|| default_output(&cli.input, Format::Png));
 
     let format = if let Some(f) = cli.format {
+        if f.is_font() {
+            bail!("format '{}' requires a directory of SVG icons as input", f.as_str());
+        }
         f
     } else if let Some(f) = format_from_path(&out) {
+        if f.is_font() {
+            bail!("format '{}' requires a directory of SVG icons as input", f.as_str());
+        }
         f
-    } else if cli.output.is_none() && cli.output_pos.is_none() {
+    } else if output_arg(cli).is_none() {
         Format::Png
     } else {
         bail!(
@@ -113,6 +150,112 @@ fn resolve_output_and_format(cli: &Cli) -> Result<(PathBuf, Format)> {
     };
 
     Ok((out, format))
+}
+
+fn collect_svg_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let entries = fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        bail!("no .svg files found in {}", dir.display());
+    }
+    Ok(files)
+}
+
+fn default_font_name(dir: &Path) -> String {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .unwrap_or("iconfont")
+        .to_owned()
+}
+
+fn resolve_font_types(cli: &Cli) -> Result<Vec<FontType>> {
+    match cli.format {
+        None => Ok(vec![FontType::Ttf, FontType::Woff, FontType::Woff2]),
+        Some(f) if f.is_font() => Ok(vec![f.to_font_type().unwrap()]),
+        Some(f) => bail!(
+            "format '{}' is for a single SVG file; use ttf, woff, or woff2 for font mode",
+            f.as_str()
+        ),
+    }
+}
+
+fn run_font(cli: &Cli) -> Result<()> {
+    if cli.size.is_some() {
+        bail!("--size is only valid for PNG/ICO/ICNS conversion");
+    }
+    if let Some(f) = cli.format {
+        if f.is_image() {
+            bail!(
+                "format '{}' is for a single SVG file; pass a .svg file or use -f ttf|woff|woff2",
+                f.as_str()
+            );
+        }
+    }
+
+    let svgs = collect_svg_files(&cli.input)?;
+    let font_name = cli
+        .name
+        .clone()
+        .unwrap_or_else(|| default_font_name(&cli.input));
+    let dest = output_arg(cli).unwrap_or_else(|| PathBuf::from("."));
+    if dest.exists() && dest.is_file() {
+        bail!("font output path must be a directory: {}", dest.display());
+    }
+    fs::create_dir_all(&dest).with_context(|| format!("failed to create {}", dest.display()))?;
+
+    let types = resolve_font_types(cli)?;
+    let files: Vec<String> = svgs
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let options = GenerateWebfontsOptions {
+        dest: dest.to_string_lossy().into_owned(),
+        files,
+        font_name: Some(font_name.clone()),
+        types: Some(types.clone()),
+        css: Some(false),
+        html: Some(false),
+        ts: Some(false),
+        write_files: Some(true),
+        ..Default::default()
+    };
+
+    webfont_generator::generate_sync(options, None)
+        .with_context(|| format!("failed to generate font from {}", cli.input.display()))?;
+
+    let labels: Vec<&str> = types
+        .iter()
+        .map(|t| match t {
+            FontType::Ttf => "ttf",
+            FontType::Woff => "woff",
+            FontType::Woff2 => "woff2",
+            _ => "?",
+        })
+        .collect();
+    println!(
+        "{} -> {}/{} ({} glyphs, {})",
+        cli.input.display(),
+        dest.display(),
+        font_name,
+        svgs.len(),
+        labels.join("+")
+    );
+    Ok(())
 }
 
 fn load_tree(path: &Path) -> Result<Tree> {
@@ -200,18 +343,18 @@ fn sizes_for(format: Format, override_size: Option<u32>) -> Vec<u32> {
         return vec![s.max(1)];
     }
     match format {
-        Format::Png => Vec::new(),
         Format::Ico => ICO_SIZES.to_vec(),
         Format::Icns => ICNS_SIZES.to_vec(),
+        _ => Vec::new(),
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
-    if !cli.input.exists() {
-        bail!("input not found: {}", cli.input.display());
+fn run_image(cli: &Cli) -> Result<()> {
+    if cli.name.is_some() {
+        bail!("--name is only valid in font mode (directory of SVG icons)");
     }
 
-    let (output, format) = resolve_output_and_format(&cli)?;
+    let (output, format) = resolve_image_output_and_format(cli)?;
     let tree = load_tree(&cli.input)?;
 
     match format {
@@ -228,10 +371,25 @@ fn run(cli: Cli) -> Result<()> {
             let sizes = sizes_for(Format::Icns, cli.size);
             write_icns(&output, &tree, &sizes)?;
         }
+        Format::Ttf | Format::Woff | Format::Woff2 => unreachable!(),
     }
 
     println!("{} -> {} ({})", cli.input.display(), output.display(), format.as_str());
     Ok(())
+}
+
+fn run(cli: Cli) -> Result<()> {
+    if !cli.input.exists() {
+        bail!("input not found: {}", cli.input.display());
+    }
+
+    if cli.input.is_dir() {
+        run_font(&cli)
+    } else if cli.input.is_file() {
+        run_image(&cli)
+    } else {
+        bail!("input is neither a file nor a directory: {}", cli.input.display());
+    }
 }
 
 fn main() {

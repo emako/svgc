@@ -3,7 +3,7 @@ name = "svgc"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Convert SVG to PNG, ICO, or ICNS"
+description = "Convert SVG to PNG, ICO, ICNS, or icon fonts (TTF/WOFF/WOFF2)"
 repository = "https://github.com/emako/svgc"
 readme = "README.md"
 build = "build.rs"
@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive"] }
 ico = "0.6"
 icns = "0.5"
 resvg = "0.45"
+webfont-generator = "0.11"
 
 [build-dependencies]
 embed-resource = "3"

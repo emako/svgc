@@ -28,7 +28,7 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "SVG converter (PNG / ICO / ICNS)"
+            VALUE "FileDescription", "SVG converter (PNG / ICO / ICNS / TTF / WOFF / WOFF2)"
             VALUE "FileVersion", "{file_version}"
             VALUE "InternalName", "svgc.exe"
             VALUE "LegalCopyright", "Copyright (C) emako"

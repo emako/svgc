@@ -1,8 +1,12 @@
 # svgc
 
-Simple CLI that converts SVG files to **PNG**, **ICO**, or **ICNS**.
+Simple CLI that converts SVG files to **PNG**, **ICO**, or **ICNS**, or packs a directory of SVG icons into an icon font (**TTF** / **WOFF** / **WOFF2**).
+
+Font mode mirrors the core of [svgtofont](https://github.com/jaywcjlove/svgtofont) (SVG icons → webfont). CSS, HTML preview, EOT, and SVG-font outputs are not generated.
 
 ## Usage
+
+### Image (single SVG file)
 
 ```text
 svgc <input.svg> [output]
@@ -18,10 +22,26 @@ svgc icon.svg icon.icns
 svgc icon.svg -o out.png --size 512
 ```
 
+### Icon font (directory of SVGs)
+
+```text
+svgc <icons-dir> [output-dir]
+```
+
+Collects `*.svg` in the directory and writes `<name>.ttf`, `<name>.woff`, and `<name>.woff2` (unless `-f` selects one format).
+
+```powershell
+svgc icons/
+svgc icons/ -o dist/
+svgc icons/ -o dist/ --name myicons
+svgc icons/ -f woff2
+```
+
 | Flag | Meaning |
 | --- | --- |
-| `-o`, `--output` | Output path (same as the optional positional argument) |
-| `-f`, `--format` | `png`, `ico`, or `icns` when the path has no usable extension |
+| `-o`, `--output` | Output path (image file, or font output directory) |
+| `-f`, `--format` | `png` / `ico` / `icns` (file) or `ttf` / `woff` / `woff2` (directory; default all three) |
+| `--name` | Font family / base file name (font mode; default: directory name) |
 | `-s`, `--size` | Pixel size for PNG, or the single size embedded in ICO/ICNS |
 
 Without `--size`, PNG uses the SVG viewport size (minimum 1). ICO embeds 16–256 px layers; ICNS embeds the common Apple sizes up to 1024 px.
